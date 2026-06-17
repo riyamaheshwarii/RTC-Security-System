@@ -1,0 +1,25 @@
+# STM32CubeIDE build output
+Debug/
+Release/
+
+# CubeIDE settings (optional - some teams commit these)
+.settings/
+.cproject
+.project
+
+# Object files
+*.o
+*.d
+*.su
+*.cyclo
+
+# Binary output
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+
+# Backup files
+*.bak
+*~
