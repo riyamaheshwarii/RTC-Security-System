@@ -8,7 +8,6 @@ from datetime import datetime
 
 BAUD_RATE   = 115200
 FLASH_DELAY = 100
-
 COL_SAFE      = "#22C55E"     # Modern green
 COL_DANGER    = "#EF4444"     # Modern red
 COL_FLASH_A   = "#DC2626"     # Flash red
@@ -21,6 +20,12 @@ COL_BORDER    = "#334155"     # Borders
 COL_TEXT      = "#F8FAFC"     # White text
 COL_ACCENT    = "#2563EB"     # Royal blue
 
+# Day  = 09:00–17:00 (5:00 PM) → alert at VAULT
+# Night= 17:01 (5:01 PM)–08:59 → alert at ENTRY
+def mode_from_time(hour: int, minute: int) -> str:
+    total_mins = hour * 60 + minute
+    # 9:00 AM = 540 minutes, 17:00 (5:00 PM) = 1020 minutes
+    return "day" if 540 <= total_mins <= 1020 else "night"
 
 class BankSecurityGUI:
     def __init__(self, root: tk.Tk):
@@ -29,7 +34,6 @@ class BankSecurityGUI:
         self.root.geometry("1250x850")
         self.root.configure(bg=COL_BG)
         self.root.resizable(True, True)
-
         self.serial_port  = None
         self.is_connected = False
         self.detected     = False
@@ -40,11 +44,52 @@ class BankSecurityGUI:
         self.ripple_spawn_job = None
         self.alert_job    = None
         self.alert_state  = False
-        self.ripple_cx = 750
-        self.ripple_cy = 200
-
+        self.current_mode = None   # "day" | "night" | None
+        self.alert_zone   = "entry"
+        # Zone centroids for ripple (updated after canvas is drawn)
+        self.zone_centers = {
+            "entry": (750, 200),
+            "vault": (122, 210),
+        }
         self._build_ui()
         self._set_idle_colors()
+        
+        # Initialize default mode
+        self._apply_mode_from_time(9, 0)
+
+    # ─────────────────────────────────────────────────────────
+    #  MODE ENGINE (driven by input time, not system clock)
+    # ─────────────────────────────────────────────────────────
+    def _apply_mode_from_time(self, hour: int, minute: int):
+        new_mode = mode_from_time(hour, minute)
+        self.current_mode = new_mode
+        self.alert_zone   = "vault" if new_mode == "day" else "entry"
+        if self.detected:
+            return
+            
+        # Update colors based on the mode
+        if new_mode == "day":
+            self._set_day_colors()
+            self.status_lbl.config(text="☀️ DAY MODE", fg="#f39c12")
+            self.alert_lbl.config(text="")
+            self.info_lbl.config(text="Vault & Cashier secured", fg="#f39c12")
+        else:
+            self._set_night_colors()
+            self.status_lbl.config(text="🌙 NIGHT MODE", fg="#2ecc71")
+            self.alert_lbl.config(text="")
+            self.info_lbl.config(text="System ready", fg="#2ecc71")
+
+    # Automatically trigger mode changes when the user types in the time box
+    def _on_time_entry_change(self, event=None):
+        raw_text = self.e_current.get().replace(":", "").replace(" ", "").strip()
+        if len(raw_text) >= 4 and raw_text[:4].isdigit():
+            try:
+                hour = int(raw_text[:2])
+                minute = int(raw_text[2:4])
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    self._apply_mode_from_time(hour, minute)
+            except ValueError:
+                pass
 
     def _build_ui(self):
         title_bar = tk.Frame(self.root, bg=COL_ACCENT, height=48)
@@ -52,17 +97,13 @@ class BankSecurityGUI:
         tk.Label(title_bar, text="🏦  BANK SECURITY SYSTEM",
                  font=("Segoe UI", 16, "bold"),
                  bg=COL_ACCENT, fg="white").pack(side=tk.LEFT, padx=16, pady=8)
-
         content = tk.Frame(self.root, bg=COL_BG)
         content.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
-
         left = tk.Frame(content, bg=COL_PANEL, width=300)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
         left.pack_propagate(False)
-
         right = tk.Frame(content, bg=COL_BG)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
         self._build_controls(left)
         self._build_floorplan(right)
         self._build_log(right)
@@ -73,7 +114,6 @@ class BankSecurityGUI:
             f.pack(fill=tk.X, padx=8, pady=(10, 2))
             tk.Label(f, text=text, font=("Segoe UI", 10, "bold"),
                      bg=COL_BORDER, fg=COL_TEXT).pack(anchor=tk.W, padx=6, pady=3)
-
         def row(lbl, default=""):
             f = tk.Frame(parent, bg=COL_PANEL)
             f.pack(fill=tk.X, padx=12, pady=2)
@@ -85,18 +125,15 @@ class BankSecurityGUI:
             e.insert(0, default)
             e.pack(side=tk.LEFT, padx=4)
             return e
-
         def btn(text, cmd, color="#2980b9"):
             tk.Button(parent, text=text, command=cmd,
                       font=("Segoe UI", 10, "bold"),
                       bg=color, fg="white", relief=tk.FLAT,
                       activebackground="#1a5276", activeforeground="white",
                       cursor="hand2", pady=5).pack(fill=tk.X, padx=12, pady=3)
-
         section("📡  Serial Connection")
         ports = [p.device for p in serial.tools.list_ports.comports()] or ["COM3"]
         self.port_var = tk.StringVar(value=ports[0])
-
         pf = tk.Frame(parent, bg=COL_PANEL)
         pf.pack(fill=tk.X, padx=12, pady=4)
         tk.Label(pf, text="COM Port:", width=10, anchor="w",
@@ -106,43 +143,37 @@ class BankSecurityGUI:
                   relief=tk.FLAT, bd=0, activebackground=COL_BORDER)
         pm["menu"].config(bg="#0d1b2a", fg="#38BDF8")
         pm.pack(side=tk.LEFT, padx=4)
-
         self.conn_btn = tk.Button(parent, text="⚡  CONNECT",
                                   command=self.toggle_connection,
                                   font=("Segoe UI", 10, "bold"),
                                   bg="#27ae60", fg="white", relief=tk.FLAT,
                                   activebackground="#1e8449", cursor="hand2", pady=6)
         self.conn_btn.pack(fill=tk.X, padx=12, pady=4)
-
         self.conn_status = tk.Label(parent, text="● DISCONNECTED",
                                     font=("Segoe UI", 9, "bold"),
                                     bg=COL_PANEL, fg="#e74c3c")
         self.conn_status.pack(pady=2)
-
         section("🕐  Time Settings  (HH:MM:SS)")
-        now = datetime.now().strftime("%H:%M:%S")
-        self.e_current = row("Current Time", now)
+        
+        # Taking time purely from user input without PC system time
+        self.e_current = row("Current Time", "09:00:00")
+        self.e_current.bind("<KeyRelease>", self._on_time_entry_change)
+        
         self.e_enable  = row("Enable (Night)", "22:00:00")
         self.e_disable = row("Disable (Day)",  "07:00:00")
-
         btn("✅  Set All Times", self.cmd_set_all_times, "#27ae60")
-
         section("🔧  Actions")
         btn("🤖  Auto Arm (22:00–07:00)", self.cmd_auto_arm, "#16a085")
         btn("▶️  Start Monitoring", self.cmd_start, "#e94560")
-
         section("🚨  System Status")
-        
         self.status_lbl = tk.Label(parent, text="IDLE",
                                    font=("Segoe UI", 16, "bold"),
                                    bg=COL_PANEL, fg=COL_IDLE)
         self.status_lbl.pack(pady=6)
-
         self.alert_lbl = tk.Label(parent, text="",
                                   font=("Segoe UI", 12, "bold"),
                                   bg=COL_PANEL, fg=COL_FLASH_A)
         self.alert_lbl.pack(pady=4)
-
         self.info_lbl = tk.Label(parent, text="System ready",
                                  font=("Segoe UI", 9),
                                  bg=COL_PANEL, fg="#888888")
@@ -151,95 +182,65 @@ class BankSecurityGUI:
     def _build_floorplan(self, parent):
         fp_frame = tk.Frame(parent, bg=COL_BG)
         fp_frame.pack(fill=tk.BOTH, expand=False, pady=(4, 0))
-
         tk.Label(fp_frame, text="BANK FLOOR PLAN",
                  font=("Segoe UI", 11, "bold"),
                  bg=COL_BG, fg=COL_TEXT).pack()
-
-        # Main container for map and legend side by side
         map_container = tk.Frame(fp_frame, bg=COL_BG)
         map_container.pack(padx=4, pady=4)
-
-        # Floor plan canvas - WIDER
         self.canvas = tk.Canvas(map_container, width=820, height=420,
                                 bg="#111827", highlightthickness=2,
                                 highlightbackground=COL_BORDER)
         self.canvas.pack(side=tk.LEFT, padx=(0, 10))
-
-        # Legend box (right)
-        legend_frame = tk.Frame(map_container, bg="#111827", 
+        legend_frame = tk.Frame(map_container, bg="#111827",
                                 highlightthickness=2,
                                 highlightbackground=COL_BORDER,
                                 width=150)
         legend_frame.pack(side=tk.LEFT, fill=tk.Y)
         legend_frame.pack_propagate(False)
-
         tk.Label(legend_frame, text="LEGEND",
                  font=("Segoe UI", 10, "bold"),
                  bg="#111827", fg=COL_TEXT).pack(pady=(15, 20))
-
-        # Legend items
         legend_items = [
             (COL_SAFE, "SECURE"),
             (COL_DANGER, "UNSECURED"),
             (COL_IDLE, "IDLE"),
             (COL_FLASH_A, "ALERT!")
         ]
-
         for color, text in legend_items:
             item_frame = tk.Frame(legend_frame, bg="#111827")
             item_frame.pack(fill=tk.X, padx=12, pady=12)
-            
             color_box = tk.Canvas(item_frame, width=24, height=24,
                                   bg=color, highlightthickness=1,
                                   highlightbackground="black")
             color_box.pack(side=tk.LEFT)
-            
             tk.Label(item_frame, text=text,
                      font=("Segoe UI", 9, "bold"),
                      bg="#0d0d0d", fg=COL_TEXT).pack(side=tk.LEFT, padx=(8, 0))
-
         self._draw_floorplan()
 
     def _draw_floorplan(self):
         c = self.canvas
         c.delete("all")
         BORDER = 3
-        
-        # Canvas dimensions
         W = 820
         H = 420
         PAD = 15
-        
-        # Zone dimensions - ENTRY is now much wider
         zones = {
-            # VAULT - Large left section
             "vault":    (PAD, PAD, 230, H - PAD),
-            
-            # ATM - Top middle
             "atm":      (240, PAD, 480, 195),
-            
-            # CASHIER - Bottom middle
             "cashier":  (240, 205, 480, H - PAD),
-            
-            # CUSTOMER AREA - Right of middle
             "customer": (490, PAD + 50, 640, H - PAD),
-            
-            # ENTRY - Far right, WIDER (150px) and tall
             "entry":    (650, PAD + 60, W - PAD, H - 60),
         }
-        
         labels = {
-            "vault": "VAULT", 
+            "vault": "VAULT",
             "atm": "ATM",
             "cashier": "CASHIER\nDESKS",
-            "customer": "CUSTOMER\nAREA", 
+            "customer": "CUSTOMER\nAREA",
             "entry": "ENTRY"
         }
-
         self.zone_rects = {}
         self.zone_labels = {}
-        
         for key, (x1, y1, x2, y2) in zones.items():
             rect = c.create_rectangle(x1, y1, x2, y2,
                                       fill=COL_IDLE,
@@ -250,14 +251,12 @@ class BankSecurityGUI:
                                 fill="#0F172A", justify=tk.CENTER)
             self.zone_rects[key] = rect
             self.zone_labels[key] = lbl
-
-        # Update ripple center to entry zone
+        # Update zone centers for ripple
+        for key, (x1, y1, x2, y2) in zones.items():
+            self.zone_centers[key] = ((x1 + x2) // 2, (y1 + y2) // 2)
         entry_coords = zones["entry"]
-        self.ripple_cx = (entry_coords[0] + entry_coords[2]) // 2
-        self.ripple_cy = (entry_coords[1] + entry_coords[3]) // 2
-
-        # Entry arrow
-        c.create_text(self.ripple_cx, entry_coords[1] - 20, text="← IN",
+        c.create_text((entry_coords[0] + entry_coords[2]) // 2,
+                      entry_coords[1] - 20, text="← IN",
                       font=("Segoe UI", 11, "bold"), fill=COL_TEXT)
 
     def _color_zone(self, key, color):
@@ -266,21 +265,32 @@ class BankSecurityGUI:
     def _build_log(self, parent):
         log_frame = tk.Frame(parent, bg=COL_BG)
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 4))
-
-        tk.Label(log_frame, text="📋  UART Live Feed",
+        
+        # New Header frame containing the Title and Clear Button
+        header = tk.Frame(log_frame, bg=COL_BG)
+        header.pack(fill=tk.X, padx=4)
+        
+        tk.Label(header, text="📋  UART Live Feed",
                  font=("Segoe UI", 9, "bold"),
-                 bg=COL_BG, fg=COL_TEXT).pack(anchor=tk.W, padx=4)
-
+                 bg=COL_BG, fg=COL_TEXT).pack(side=tk.LEFT)
+                 
+        tk.Button(header, text="Clear", command=self.clear_log_and_alert,
+                  bg="#e74c3c", fg="white", relief=tk.FLAT,
+                  font=("Segoe UI", 8, "bold"), cursor="hand2", padx=10).pack(side=tk.RIGHT)
+                  
         self.log_text = tk.Text(log_frame, height=8,
                                 font=("Consolas", 9),
                                 bg="#0d0d0d", fg="#38BDF8",
                                 insertbackground="white",
                                 relief=tk.FLAT, bd=2)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-
         sb = tk.Scrollbar(log_frame, command=self.log_text.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.configure(yscrollcommand=sb.set)
+
+    def clear_log_and_alert(self):
+        self.log_text.delete("1.0", tk.END)
+        self._trigger_clear()
 
     def toggle_connection(self):
         if not self.is_connected:
@@ -327,104 +337,127 @@ class BankSecurityGUI:
             self.serial_port.write(data.encode("utf-8"))
             self.serial_port.flush()
 
+    # ─────────────────────────────────────────────────────────
+    #  PARSER
+    # ─────────────────────────────────────────────────────────
     def _process_line(self, line: str):
         self._log(line + "\n")
-        
-        clean = line.upper().replace(">>>", "").replace("<<<", "").replace("=", "").strip()
-        
-        print(f"[DEBUG] Raw: '{line}' | Clean: '{clean}'")
+        upper = line.upper()
+
+        if upper.startswith("TIME:"):
+            # System time updates via serial are ignored for mode changes 
+            # to strictly rely on the GUI user-entered time.
+            pass
+
+        clean = upper.replace(">>>", "").replace("<<<", "").replace("=", "").strip()
+
+        # Confirmation echoes
+        if "CURRENT:" in upper:
+            return
+        if "ENABLE:" in upper:
+            return
+        if "DISABLE:" in upper:
+            return
+        if upper.startswith("TIME SAVED:") or upper.startswith("ENTER") or upper.startswith("RTC SET"):
+            return
 
         if "INTRUSION" in clean or "INTRUDER" in clean or "DETECTED" in clean:
-            print("[DEBUG] >>> INTRUSION MATCHED <<<")
             self._trigger_intrusion()
             return
 
         if "CLEAR" in clean:
-            print("[DEBUG] >>> CLEAR MATCHED <<<")
             self._trigger_clear()
             return
 
-        if "CURRENT:" in line.upper():
-            self._log_status(f"✅ Current time set")
-            return
-            
-        if "ENABLE:" in line.upper():
-            self._log_status(f"✅ Enable time set")
-            return
-            
-        if "DISABLE:" in line.upper():
-            self._log_status(f"✅ Disable time set")
-            return
-
         if "MONITORING STARTED" in clean or "MONITORING START" in clean:
-            self.detected = False
-            self._stop_all_effects()
-            self._set_night_colors()
-            self.status_lbl.config(text="🔍 MONITORING", fg="#3498db")
-            self.alert_lbl.config(text="")
-            self.info_lbl.config(text="Waiting for alarm...", fg="#888")
-            self._log_status("🟢 Monitoring started")
+            if not self.detected:
+                self._stop_all_effects()
+                if self.current_mode == "day":
+                    self._set_day_colors()
+                    self.status_lbl.config(text="🔍 DAY MONITORING", fg="#3498db")
+                else:
+                    self._set_night_colors()
+                    self.status_lbl.config(text="🔍 NIGHT MONITORING", fg="#3498db")
+                self.alert_lbl.config(text="")
+                self.info_lbl.config(text="Waiting for alarm...", fg="#888")
             return
 
         if "ALARM ACTIVE" in clean or "ALARM ENABLED" in clean or "ALARM ON" in clean:
-            self.detected = False
-            self._stop_all_effects()
-            self._set_night_colors()
-            self.status_lbl.config(text="🌙 ALARM ACTIVE", fg="#2ecc71")
-            self.alert_lbl.config(text="All zones armed", fg="#2ecc71")
-            self.info_lbl.config(text="Security system armed", fg="#2ecc71")
-            self._log_status("🟢 Alarm ACTIVE")
+            if not self.detected:
+                self._stop_all_effects()
+                if self.current_mode == "day":
+                    self._set_day_colors()
+                    self.status_lbl.config(text="☀️ DAY MODE", fg="#f39c12")
+                    self.info_lbl.config(text="Vault & Cashier secured", fg="#f39c12")
+                else:
+                    self._set_night_colors()
+                    self.status_lbl.config(text="🌙 NIGHT MODE", fg="#2ecc71")
+                    self.info_lbl.config(text="All zones armed", fg="#2ecc71")
+                self.alert_lbl.config(text="")
             return
 
         if "ALARM DISABLED" in clean or "ALARM OFF" in clean:
-            self.detected = False
-            self._stop_all_effects()
-            self._set_day_colors()
-            self.status_lbl.config(text="☀️ DAY MODE", fg="#f39c12")
-            self.alert_lbl.config(text="")
-            self.info_lbl.config(text="Vault & Cashier secured", fg="#f39c12")
-            self._log_status("🔴 Alarm disabled")
+            if not self.detected:
+                self._stop_all_effects()
+                if self.current_mode == "day":
+                    self._set_day_colors()
+                    self.status_lbl.config(text="☀️ DAY MODE", fg="#f39c12")
+                    self.info_lbl.config(text="Vault & Cashier secured", fg="#f39c12")
+                else:
+                    self._set_night_colors()
+                    self.status_lbl.config(text="🌙 NIGHT MODE", fg="#2ecc71")
+                    self.info_lbl.config(text="All zones armed", fg="#2ecc71")
+                self.alert_lbl.config(text="")
             return
 
         if "MONITORING STOPPED" in clean or "MONITORING STOP" in clean:
             self.detected = False
             self._stop_all_effects()
-            self._set_day_colors()
-            self.status_lbl.config(text="☀️ DAY MODE", fg="#f39c12")
+            if self.current_mode == "day":
+                self._set_day_colors()
+            else:
+                self._set_night_colors()
+            self.status_lbl.config(text="☀️ SYSTEM STOPPED", fg="#f39c12")
             self.alert_lbl.config(text="")
-            self.info_lbl.config(text="Vault & Cashier secured", fg="#f39c12")
-            self._log_status("☀️ Switched to Day Mode")
+            self.info_lbl.config(text="Monitoring stopped", fg="#f39c12")
             return
 
         if "SCANNING" in clean or "NO TARGET" in clean:
             if not self.detected:
                 self.info_lbl.config(text="Sensor scanning...", fg="#3498db")
             return
+            
+        if "IDLE" in clean:
+            return
 
     def _trigger_intrusion(self):
-        print("[DEBUG] _trigger_intrusion() CALLED!")
-        
-        self.status_lbl.config(text="⚠️ INTRUSION DETECTED", fg=COL_FLASH_A)
-        self.info_lbl.config(text="SECURITY BREACH AT ENTRY!", fg=COL_FLASH_A)
-        
+        # Determine the name of the breached zone
+        if self.alert_zone == "vault":
+            zone_name = "VAULT"
+        else:
+            zone_name = "ENTRY"
+
+        self.status_lbl.config(text=f"⚠️ INTRUSION DETECTED", fg=COL_FLASH_A)
+        self.info_lbl.config(text=f"SECURITY BREACH AT {zone_name}!", fg=COL_FLASH_A)
+
         if not self.detected:
             self.detected = True
-            print("[DEBUG] Starting all effects...")
             self._start_flash()
             self._start_ripple()
             self._start_alert_flash()
 
     def _trigger_clear(self):
-        print("[DEBUG] _trigger_clear() CALLED!")
-        
         self.detected = False
         self._stop_all_effects()
-        self._color_zone("entry", COL_SAFE)
-        self.canvas.itemconfig(self.zone_labels["entry"], text="ENTRY", fill="#0F172A")
-        
+        self._color_zone(self.alert_zone, COL_SAFE)
+        self.canvas.itemconfig(self.zone_labels[self.alert_zone],
+                               text=self.alert_zone.upper(), fill="#0F172A")
+
         self.status_lbl.config(text="✅ CLEAR", fg="#2ecc71")
         self.alert_lbl.config(text="")
-        self.info_lbl.config(text="Entry zone clear", fg="#2ecc71")
+        
+        # zone_name = "Vault" if self.alert_zone == "vault" else "Entry"
+        # self.info_lbl.config(text=f"{zone_name} zone clear", fg="#2ecc71")
 
     def _set_idle_colors(self):
         for key in ("vault", "atm", "cashier", "customer", "entry"):
@@ -438,10 +471,8 @@ class BankSecurityGUI:
             self._color_zone(key, COL_SAFE)
 
     def _set_day_colors(self):
-        # Vault and Cashier stay green (secured)
         self._color_zone("vault", COL_SAFE)
         self._color_zone("cashier", COL_SAFE)
-        # Others are red (unsecured)
         for key in ("atm", "customer", "entry"):
             self._color_zone(key, COL_DANGER)
 
@@ -450,6 +481,7 @@ class BankSecurityGUI:
         self._stop_ripple()
         self._stop_alert_flash()
 
+    # ── FLASH — targets self.alert_zone ───────────────────────
     def _start_flash(self):
         self._stop_flash()
         self.flash_state = False
@@ -458,16 +490,18 @@ class BankSecurityGUI:
     def _flash_tick(self):
         if not self.detected:
             return
-        
+
         self.flash_state = not self.flash_state
         color = COL_FLASH_A if self.flash_state else COL_FLASH_B
-        self._color_zone("entry", color)
-        
+        self._color_zone(self.alert_zone, color)
+
         if self.flash_state:
-            self.canvas.itemconfig(self.zone_labels["entry"], text="⚠️\nALERT!", fill="white")
+            self.canvas.itemconfig(self.zone_labels[self.alert_zone],
+                                   text="⚠️\nALERT!", fill="white")
         else:
-            self.canvas.itemconfig(self.zone_labels["entry"], text="🚨\nBREACH!", fill="#0F172A")
-        
+            self.canvas.itemconfig(self.zone_labels[self.alert_zone],
+                                   text="🚨\nBREACH!", fill="#0F172A")
+
         self.flash_job = self.root.after(FLASH_DELAY, self._flash_tick)
 
     def _stop_flash(self):
@@ -475,8 +509,11 @@ class BankSecurityGUI:
             self.root.after_cancel(self.flash_job)
             self.flash_job = None
         self.flash_state = False
-        if hasattr(self, 'zone_labels') and "entry" in self.zone_labels:
-            self.canvas.itemconfig(self.zone_labels["entry"], text="ENTRY", fill="#0F172A")
+        if hasattr(self, 'zone_labels'):
+            for key in ("entry", "vault"):
+                if key in self.zone_labels:
+                    self.canvas.itemconfig(self.zone_labels[key],
+                                           text=key.upper(), fill="#0F172A")
 
     def _start_alert_flash(self):
         self._stop_alert_flash()
@@ -486,14 +523,17 @@ class BankSecurityGUI:
     def _alert_tick(self):
         if not self.detected:
             return
-        
+
         self.alert_state = not self.alert_state
-        
+        zone_name = "VAULT" if self.alert_zone == "vault" else "ENTRY"
+
         if self.alert_state:
-            self.alert_lbl.config(text="🚨 ALERT! ENTRY BREACH 🚨", fg=COL_FLASH_A)
+            self.alert_lbl.config(
+                text=f"🚨 ALERT! {zone_name} BREACH 🚨", fg=COL_FLASH_A)
         else:
-            self.alert_lbl.config(text="⚠️ SECURITY VIOLATION ⚠️", fg=COL_FLASH_B)
-        
+            self.alert_lbl.config(
+                text="⚠️ SECURITY VIOLATION ⚠️", fg=COL_FLASH_B)
+
         self.alert_job = self.root.after(250, self._alert_tick)
 
     def _stop_alert_flash(self):
@@ -503,6 +543,7 @@ class BankSecurityGUI:
         self.alert_state = False
         self.alert_lbl.config(text="")
 
+    # ── RIPPLE — centred on self.alert_zone ───────────────────
     def _start_ripple(self):
         self._stop_ripple()
         self._spawn_ring()
@@ -511,44 +552,46 @@ class BankSecurityGUI:
     def _spawn_ring(self):
         if not self.detected:
             return
-        
+
+        cx, cy = self.zone_centers[self.alert_zone]
         ring_id = self.canvas.create_oval(
-            self.ripple_cx - 5, self.ripple_cy - 5,
-            self.ripple_cx + 5, self.ripple_cy + 5,
+            cx - 5, cy - 5, cx + 5, cy + 5,
             outline=COL_FLASH_A, width=3, fill=""
         )
-        self.ripple_rings.append({"id": ring_id, "radius": 5})
+        self.ripple_rings.append({"id": ring_id, "radius": 5,
+                                  "cx": cx, "cy": cy})
         self.ripple_spawn_job = self.root.after(400, self._spawn_ring)
 
     def _ripple_tick(self):
         if not self.detected:
             return
-        
+
         MAX_RADIUS = 130
         STEP = 5
-        
+
         alive = []
         for ring in self.ripple_rings:
             ring["radius"] += STEP
-            r = ring["radius"]
-            
+            r  = ring["radius"]
+            cx = ring["cx"]
+            cy = ring["cy"]
+
             if r >= MAX_RADIUS:
                 self.canvas.delete(ring["id"])
             else:
                 self.canvas.coords(
                     ring["id"],
-                    self.ripple_cx - r, self.ripple_cy - r,
-                    self.ripple_cx + r, self.ripple_cy + r
+                    cx - r, cy - r, cx + r, cy + r
                 )
-                
+
                 frac = r / MAX_RADIUS
                 intensity = int(255 * (1 - frac))
                 color = f"#{intensity:02x}{intensity//4:02x}00"
                 width = max(1, int(4 * (1 - frac)))
-                
+
                 self.canvas.itemconfig(ring["id"], outline=color, width=width)
                 alive.append(ring)
-        
+
         self.ripple_rings = alive
         self.ripple_job = self.root.after(40, self._ripple_tick)
 
@@ -559,7 +602,7 @@ class BankSecurityGUI:
         if self.ripple_spawn_job:
             self.root.after_cancel(self.ripple_spawn_job)
             self.ripple_spawn_job = None
-        
+
         for ring in self.ripple_rings:
             self.canvas.delete(ring["id"])
         self.ripple_rings = []
@@ -567,9 +610,6 @@ class BankSecurityGUI:
     def _log(self, msg: str):
         self.log_text.insert(tk.END, msg)
         self.log_text.see(tk.END)
-
-    def _log_status(self, msg: str):
-        self._log(f" {msg}\n")
 
     @staticmethod
     def _parse_time(text: str) -> str:
@@ -590,10 +630,15 @@ class BankSecurityGUI:
             messagebox.showerror("Time Error", str(e))
             return
 
+        # Apply mode from the typed current time manually via button press
+        hour = int(tc[:2])
+        minute = int(tc[2:4])
+        self._apply_mode_from_time(hour, minute)
+
         self._log("\n─── Setting all times ───────────────────────\n")
-        self._log_status(f"📤 Current → {tc[:2]}:{tc[2:4]}:{tc[4:]}")
-        self._log_status(f"📤 Enable  → {te[:2]}:{te[2:4]}:{te[4:]}")
-        self._log_status(f"📤 Disable → {td[:2]}:{td[2:4]}:{td[4:]}")
+        self._log(f" 📤 Current → {tc[:2]}:{tc[2:4]}:{tc[4:]}\n")
+        self._log(f" 📤 Enable  → {te[:2]}:{te[2:4]}:{te[4:]}\n")
+        self._log(f" 📤 Disable → {td[:2]}:{td[2:4]}:{td[4:]}\n")
         self._log("─────────────────────────────────────────────\n")
 
         threading.Thread(target=self._set_all_worker, args=(tc, te, td), daemon=True).start()
@@ -623,16 +668,15 @@ class BankSecurityGUI:
         if not (self.is_connected and self.serial_port and self.serial_port.is_open):
             messagebox.showwarning("Not Connected", "Connect first!")
             return
-        self._log_status("📤 Auto-Arm")
+        self._log(" 📤 Auto-Arm\n")
         threading.Thread(target=self._raw_send, args=("6",), daemon=True).start()
 
     def cmd_start(self):
         if not (self.is_connected and self.serial_port and self.serial_port.is_open):
             messagebox.showwarning("Not Connected", "Connect first!")
             return
-        self._log_status("📤 Start Monitoring")
+        self._log(" 📤 Start Monitoring\n")
         threading.Thread(target=self._raw_send, args=("4",), daemon=True).start()
-
 
 if __name__ == "__main__":
     root = tk.Tk()
