@@ -77,4 +77,5 @@ The system uses a simple UART serial protocol at 115200 baud.
 ## Collaborators
 
 Riya Maheshwari
+
 Anirban Biswas
