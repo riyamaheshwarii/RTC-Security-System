@@ -73,3 +73,9 @@ The system uses a simple UART serial protocol at 115200 baud.
     - 4: Start Monitoring command.
     - 6: Auto-arm command (defaults to 22:00 - 07:00).
     - The STM32 sends formatted string logs (e.g., *** DETECTED! ***) parsed by the Python GUI to trigger graphical alerts.
+
+## Collaborators
+
+Riya Maheshwari
+
+Anirban Biswas
